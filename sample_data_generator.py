@@ -1,6 +1,6 @@
 import random
-from datetime import datetime, timedelta
-import pandas as pd
+from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 
 def generate_sample_logs(num_entries=10000, output_file='sample_access.log'):
     """Generate sample web server logs for testing"""
@@ -48,7 +48,7 @@ def generate_sample_logs(num_entries=10000, output_file='sample_access.log'):
     
     # Generate logs
     logs = []
-    base_time = datetime.now() - timedelta(days=7)
+    base_time = datetime.now(timezone.utc) - timedelta(days=7)
     
     for i in range(num_entries):
         # Generate timestamp
@@ -60,10 +60,10 @@ def generate_sample_logs(num_entries=10000, output_file='sample_access.log'):
         # Select random values
         ip = random.choice(ips)
         method = random.choice(methods)
-        url = random.choice(urls)
+        url = quote(random.choice(urls), safe='/?=&%\\')
         status = random.choice(status_codes)
         size = random.randint(100, 50000)
-        referer = '-' if random.random() > 0.3 else random.choice(urls)
+        referer = '-' if random.random() > 0.3 else quote(random.choice(urls), safe='/?=&%\\')
         user_agent = random.choice(user_agents)
         
         # Apache log format
@@ -82,7 +82,7 @@ def generate_anomaly_logs(num_entries=1000, output_file='anomaly_access.log'):
     """Generate logs with specific anomalies for testing"""
     
     logs = []
-    base_time = datetime.now() - timedelta(days=1)
+    base_time = datetime.now(timezone.utc) - timedelta(days=1)
     
     # Anomaly 1: High frequency from single IP
     suspicious_ip = "203.0.113.100"
@@ -100,7 +100,7 @@ def generate_anomaly_logs(num_entries=1000, output_file='anomaly_access.log'):
     
     for i in range(200):
         timestamp = base_time + timedelta(minutes=i)
-        payload = random.choice(sql_injection_payloads)
+        payload = quote(random.choice(sql_injection_payloads), safe='')
         log_entry = f'192.168.1.50 - - [{timestamp.strftime("%d/%b/%Y:%H:%M:%S %z")}] "GET /search?id={payload} HTTP/1.1" 404 567 "-" "curl/7.68.0"'
         logs.append(log_entry)
     
@@ -113,7 +113,7 @@ def generate_anomaly_logs(num_entries=1000, output_file='anomaly_access.log'):
     
     for i in range(150):
         timestamp = base_time + timedelta(minutes=i*2)
-        path = random.choice(traversal_attempts)
+        path = quote(random.choice(traversal_attempts), safe='/\\')
         log_entry = f'10.0.0.25 - - [{timestamp.strftime("%d/%b/%Y:%H:%M:%S %z")}] "GET /file?path={path} HTTP/1.1" 403 234 "-" "Python-requests/2.28.1"'
         logs.append(log_entry)
     

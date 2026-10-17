@@ -27,7 +27,7 @@ def main():
     if args.dashboard:
         from dashboard_app import app
         print("Starting dashboard at http://localhost:8050")
-        app.run_server(debug=True, host='0.0.0.0', port=8050)
+        app.run(debug=False, host='127.0.0.1', port=8050)
         return
     
     if not args.log_file:
@@ -41,7 +41,8 @@ def main():
     try:
         report = analyzer.run_full_analysis(args.log_file)
         print("\nAnalysis completed successfully!")
-        print(f"Check 'log_analysis_report.html' for detailed results.")
+        print("Check 'log_analysis_report.html' for detailed results.")
+        print(f"Valid requests: {report['total_requests']}; malformed lines: {report['malformed_lines']}")
         print(f"Total anomalies detected: {len(analyzer.anomalies)}")
     except Exception as e:
         print(f"Error: {e}")

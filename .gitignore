@@ -1,0 +1,6 @@
+__pycache__/
+.pytest_cache/
+.venv/
+*.py[cod]
+*.log
+log_analysis_report.html

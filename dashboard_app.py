@@ -1,14 +1,10 @@
+import base64
+import binascii
+
 import dash
 from dash import dcc, html, Input, Output, callback
-import plotly.express as px
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import pandas as pd
 from log_analyzer import NetworkLogAnalyzer
 import dash_bootstrap_components as dbc
-
-# Initialize the analyzer
-analyzer = NetworkLogAnalyzer()
 
 # Initialize the Dash app
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
@@ -68,20 +64,12 @@ def update_output(contents, filename):
         return "", html.Div("Please upload a log file to begin analysis.", className="text-center text-muted")
     
     try:
-        # Parse the uploaded file
-        import base64
-        import io
-        
-        content_type, content_string = contents.split(',')
-        decoded = base64.b64decode(content_string)
-        
-        # Save to temporary file
-        temp_filename = f"temp_{filename}"
-        with open(temp_filename, 'wb') as f:
-            f.write(decoded)
-        
-        # Run analysis
-        analyzer.run_full_analysis(temp_filename)
+        # Keep each upload and its analysis local to this callback.
+        _, content_string = contents.split(',', 1)
+        decoded = base64.b64decode(content_string, validate=True)
+        analyzer = NetworkLogAnalyzer()
+        analyzer.load_log_text(decoded.decode('utf-8-sig'))
+        analyzer.detect_anomalies()
         
         # Generate visualizations
         figs = analyzer.create_visualizations()
@@ -99,6 +87,7 @@ def update_output(contents, filename):
                         dbc.CardBody([
                             html.H5("Summary Statistics", className="card-title"),
                             html.P(f"Total Requests: {report['total_requests']:,}"),
+                            html.P(f"Malformed Lines: {report['malformed_lines']:,}"),
                             html.P(f"Unique IPs: {report['unique_ips']:,}"),
                             html.P(f"Error Rate: {report.get('error_rate', 0):.2%}"),
                             html.P(f"Date Range: {report['date_range']['start']} to {report['date_range']['end']}")
@@ -156,9 +145,9 @@ def update_output(contents, filename):
         
         return upload_status, analysis_content
         
-    except Exception as e:
+    except (ValueError, UnicodeError, binascii.Error) as e:
         error_msg = dbc.Alert(f"Error analyzing file: {str(e)}", color="danger")
         return error_msg, html.Div("Analysis failed. Please check the log file format.", className="text-center text-danger")
 
 if __name__ == '__main__':
-    app.run_server(debug=True, host='0.0.0.0', port=8050)
+    app.run(debug=False, host='127.0.0.1', port=8050)

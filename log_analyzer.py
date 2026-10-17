@@ -1,355 +1,200 @@
-import pandas as pd
-import numpy as np
+"""Parse Apache/Nginx access logs and summarize suspicious traffic."""
+
+from datetime import datetime, timezone
+from html import escape
+from pathlib import Path
 import re
-import matplotlib.pyplot as plt
-import seaborn as sns
+from urllib.parse import unquote
+
+import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from datetime import datetime, timedelta
-from collections import Counter
-import warnings
-warnings.filterwarnings('ignore')
+
+
+# Accept common and combined log formats, including "-" response sizes.
+LOG_PATTERN = re.compile(
+    r'^(?P<ip>\S+) \S+ \S+ \[(?P<timestamp>[^]]+)\] '
+    r'"(?P<method>\S+) (?P<url>\S+) (?P<protocol>\S+)" '
+    r'(?P<status>\d{3}) (?P<size>\d+|-)'
+    r'(?: "(?P<referer>[^"]*)" "(?P<user_agent>[^"]*)")?$'
+)
+SUSPICIOUS_PATTERNS = {
+    "Directory traversal": re.compile(r'\.\.[/\\]'),
+    "Cross-site scripting": re.compile(r'<script\b', re.I),
+    "SQL injection": re.compile(r'\bunion\s+select\b|\bor\s+[^&]*=', re.I),
+    "Command execution": re.compile(r'\bcmd\.exe\b|[?&]cmd=', re.I),
+}
+
 
 class NetworkLogAnalyzer:
-    def __init__(self, log_file_path=None):
+    def __init__(self, log_file_path=None, high_frequency_threshold=100):
+        if high_frequency_threshold < 1:
+            raise ValueError("high_frequency_threshold must be positive")
         self.log_file_path = log_file_path
+        self.high_frequency_threshold = high_frequency_threshold
         self.df = None
+        self.malformed_lines = 0
         self.anomalies = []
-        
+
     def load_log_file(self, file_path=None):
-        """Load log file and parse into DataFrame"""
-        if file_path:
+        """Load a UTF-8 access log. File errors propagate to the caller."""
+        if file_path is not None:
             self.log_file_path = file_path
-            
         if not self.log_file_path:
             raise ValueError("Please provide a log file path")
-            
-        try:
-            # Common log patterns
-            apache_pattern = r'(\S+) \S+ \S+ \[([\w:/]+\s[+\-]\d{4})\] "(\S+) (\S+) (\S+)" (\d{3}) (\d+) "([^"]*)" "([^"]*)"'
-            nginx_pattern = r'(\S+) - - \[([\w:/]+\s[+\-]\d{4})\] "(\S+) (\S+) (\S+)" (\d{3}) (\d+) "([^"]*)" "([^"]*)"'
-            
-            parsed_logs = []
-            
-            with open(self.log_file_path, 'r', encoding='utf-8', errors='ignore') as file:
-                for line_num, line in enumerate(file, 1):
-                    line = line.strip()
-                    if not line:
-                        continue
-                        
-                    # Try to parse with Apache pattern
-                    match = re.match(apache_pattern, line)
-                    if match:
-                        ip, timestamp, method, url, protocol, status, size, referer, user_agent = match.groups()
-                        parsed_logs.append({
-                            'line_number': line_num,
-                            'ip': ip,
-                            'timestamp': timestamp,
-                            'method': method,
-                            'url': url,
-                            'protocol': protocol,
-                            'status': int(status),
-                            'size': int(size) if size != '-' else 0,
-                            'referer': referer,
-                            'user_agent': user_agent,
-                            'raw_log': line
-                        })
-                    else:
-                        # For unparseable lines, store as-is
-                        parsed_logs.append({
-                            'line_number': line_num,
-                            'raw_log': line,
-                            'parsed': False
-                        })
-            
-            self.df = pd.DataFrame(parsed_logs)
-            print(f"Loaded {len(self.df)} log entries")
-            return self.df
-            
-        except Exception as e:
-            print(f"Error loading log file: {e}")
-            return None
-    
-    def preprocess_data(self):
-        """Preprocess and clean the data"""
-        if self.df is None:
-            raise ValueError("No data loaded. Please load a log file first.")
-            
-        # Convert timestamp to datetime
-        if 'timestamp' in self.df.columns:
-            self.df['datetime'] = pd.to_datetime(self.df['timestamp'], format='%d/%b/%Y:%H:%M:%S %z', errors='coerce')
-            
-        # Extract additional features
-        if 'url' in self.df.columns:
-            self.df['url_length'] = self.df['url'].str.len()
-            self.df['has_query_params'] = self.df['url'].str.contains('\?').astype(int)
-            
-        if 'user_agent' in self.df.columns:
-            self.df['is_bot'] = self.df['user_agent'].str.contains('bot|crawler|spider', case=False, na=False).astype(int)
-            
-        if 'status' in self.df.columns:
-            self.df['is_error'] = (self.df['status'] >= 400).astype(int)
-            self.df['is_success'] = (self.df['status'] < 400).astype(int)
-            
-        print("Data preprocessing completed")
-        
-    def detect_anomalies(self):
-        """Detect various types of anomalies in the logs"""
-        if self.df is None:
-            raise ValueError("No data loaded. Please load a log file first.")
-            
-        self.anomalies = []
-        
-        # 1. High frequency requests from same IP
-        if 'ip' in self.df.columns:
-            ip_counts = self.df['ip'].value_counts()
-            threshold = ip_counts.quantile(0.95)
-            suspicious_ips = ip_counts[ip_counts > threshold]
-            
-            for ip, count in suspicious_ips.items():
-                self.anomalies.append({
-                    'type': 'High Frequency IP',
-                    'ip': ip,
-                    'count': count,
-                    'severity': 'High' if count > threshold * 2 else 'Medium'
-                })
-        
-        # 2. Error rate anomalies
-        if 'status' in self.df.columns:
-            error_rate = self.df['is_error'].mean()
-            if error_rate > 0.1:  # More than 10% errors
-                self.anomalies.append({
-                    'type': 'High Error Rate',
-                    'error_rate': error_rate,
-                    'severity': 'High' if error_rate > 0.2 else 'Medium'
-                })
-        
-        # 3. Suspicious URL patterns
-        if 'url' in self.df.columns:
-            suspicious_patterns = [
-                r'\.\./',  # Directory traversal
-                r'<script',  # XSS attempts
-                r'union.*select',  # SQL injection
-                r'cmd\.exe',  # Command injection
-            ]
-            
-            for pattern in suspicious_patterns:
-                matches = self.df[self.df['url'].str.contains(pattern, case=False, na=False)]
-                if not matches.empty:
-                    self.anomalies.append({
-                        'type': 'Suspicious URL Pattern',
-                        'pattern': pattern,
-                        'count': len(matches),
-                        'severity': 'High'
-                    })
-        
-        # 4. Unusual user agents
-        if 'user_agent' in self.df.columns:
-            # Very short or missing user agents might be suspicious
-            suspicious_ua = self.df[
-                (self.df['user_agent'].str.len() < 20) | 
-                (self.df['user_agent'].isna())
-            ]
-            if not suspicious_ua.empty:
-                self.anomalies.append({
-                    'type': 'Suspicious User Agent',
-                    'count': len(suspicious_ua),
-                    'severity': 'Medium'
-                })
-        
-        print(f"Detected {len(self.anomalies)} anomalies")
-        return self.anomalies
-    
-    def generate_traffic_report(self):
-        """Generate comprehensive traffic analysis report"""
-        if self.df is None:
-            raise ValueError("No data loaded. Please load a log file first.")
-            
-        report = {}
-        
-        # Basic statistics
-        report['total_requests'] = len(self.df)
-        report['unique_ips'] = self.df['ip'].nunique() if 'ip' in self.df.columns else 0
-        report['date_range'] = {
-            'start': self.df['datetime'].min().strftime('%Y-%m-%d %H:%M:%S') if 'datetime' in self.df.columns else 'N/A',
-            'end': self.df['datetime'].max().strftime('%Y-%m-%d %H:%M:%S') if 'datetime' in self.df.columns else 'N/A'
-        }
-        
-        # Status code distribution
-        if 'status' in self.df.columns:
-            report['status_distribution'] = self.df['status'].value_counts().to_dict()
-            report['error_rate'] = (self.df['status'] >= 400).mean()
-        
-        # Top IPs
-        if 'ip' in self.df.columns:
-            report['top_ips'] = self.df['ip'].value_counts().head(10).to_dict()
-        
-        # Top URLs
-        if 'url' in self.df.columns:
-            report['top_urls'] = self.df['url'].value_counts().head(10).to_dict()
-        
-        # Method distribution
-        if 'method' in self.df.columns:
-            report['method_distribution'] = self.df['method'].value_counts().to_dict()
-        
-        return report
-    
-    def create_visualizations(self):
-        """Create various visualizations for the log data"""
-        if self.df is None:
-            raise ValueError("No data loaded. Please load a log file first.")
-            
-        figs = {}
-        
-        # 1. Traffic over time
-        if 'datetime' in self.df.columns:
-            hourly_traffic = self.df.set_index('datetime').resample('H').size()
-            fig1 = px.line(
-                x=hourly_traffic.index, 
-                y=hourly_traffic.values,
-                title='Traffic Over Time (Hourly)',
-                labels={'x': 'Time', 'y': 'Number of Requests'}
-            )
-            figs['traffic_timeline'] = fig1
-        
-        # 2. Status code distribution
-        if 'status' in self.df.columns:
-            status_counts = self.df['status'].value_counts()
-            fig2 = px.pie(
-                values=status_counts.values,
-                names=status_counts.index,
-                title='HTTP Status Code Distribution'
-            )
-            figs['status_distribution'] = fig2
-        
-        # 3. Top IPs bar chart
-        if 'ip' in self.df.columns:
-            top_ips = self.df['ip'].value_counts().head(15)
-            fig3 = px.bar(
-                x=top_ips.values,
-                y=top_ips.index,
-                orientation='h',
-                title='Top 15 IP Addresses by Request Count',
-                labels={'x': 'Request Count', 'y': 'IP Address'}
-            )
-            figs['top_ips'] = fig3
-        
-        # 4. Method distribution
-        if 'method' in self.df.columns:
-            method_counts = self.df['method'].value_counts()
-            fig4 = px.bar(
-                x=method_counts.index,
-                y=method_counts.values,
-                title='HTTP Methods Distribution',
-                labels={'x': 'HTTP Method', 'y': 'Count'}
-            )
-            figs['method_distribution'] = fig4
-        
-        return figs
-    
-    def export_report(self, filename='log_analysis_report.html'):
-        """Export analysis report to HTML file"""
-        report = self.generate_traffic_report()
-        anomalies = self.anomalies if self.anomalies else self.detect_anomalies()
-        visualizations = self.create_visualizations()
-        
-        html_content = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Network Log Analysis Report</title>
-            <style>
-                body {{ font-family: Arial, sans-serif; margin: 40px; }}
-                .header {{ background-color: #f0f0f0; padding: 20px; border-radius: 5px; }}
-                .section {{ margin: 20px 0; }}
-                .anomaly {{ background-color: #ffebee; padding: 10px; margin: 5px 0; border-left: 4px solid #f44336; }}
-                .stats {{ background-color: #e8f5e8; padding: 15px; border-radius: 5px; }}
-                table {{ border-collapse: collapse; width: 100%; }}
-                th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
-                th {{ background-color: #f2f2f2; }}
-            </style>
-        </head>
-        <body>
-            <div class="header">
-                <h1>Network Log Analysis Report</h1>
-                <p>Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-            </div>
-            
-            <div class="section">
-                <h2>Summary Statistics</h2>
-                <div class="stats">
-                    <p><strong>Total Requests:</strong> {report['total_requests']:,}</p>
-                    <p><strong>Unique IPs:</strong> {report['unique_ips']:,}</p>
-                    <p><strong>Date Range:</strong> {report['date_range']['start']} to {report['date_range']['end']}</p>
-                    <p><strong>Error Rate:</strong> {report.get('error_rate', 0):.2%}</p>
-                </div>
-            </div>
-            
-            <div class="section">
-                <h2>Detected Anomalies</h2>
-        """
-        
-        for anomaly in anomalies:
-            html_content += f"""
-                <div class="anomaly">
-                    <strong>{anomaly['type']}</strong> - Severity: {anomaly['severity']}<br>
-                    {', '.join([f"{k}: {v}" for k, v in anomaly.items() if k not in ['type', 'severity']])}
-                </div>
-            """
-        
-        html_content += """
-            </div>
-            
-            <div class="section">
-                <h2>Top IP Addresses</h2>
-                <table>
-                    <tr><th>IP Address</th><th>Request Count</th></tr>
-        """
-        
-        if 'top_ips' in report:
-            for ip, count in list(report['top_ips'].items())[:10]:
-                html_content += f"<tr><td>{ip}</td><td>{count:,}</td></tr>"
-        
-        html_content += """
-                </table>
-            </div>
-        </body>
-        </html>
-        """
-        
-        with open(filename, 'w', encoding='utf-8') as f:
-            f.write(html_content)
-        
-        print(f"Report exported to {filename}")
-        
-    def run_full_analysis(self, log_file_path=None):
-        """Run complete analysis pipeline"""
-        print("Starting Network Log Analysis...")
-        
-        # Load data
-        self.load_log_file(log_file_path)
-        
-        # Preprocess
-        self.preprocess_data()
-        
-        # Detect anomalies
-        self.detect_anomalies()
-        
-        # Generate report
-        report = self.generate_traffic_report()
-        
-        # Export report
-        self.export_report()
-        
-        print("Analysis completed successfully!")
-        return report
+        with open(self.log_file_path, encoding="utf-8", errors="replace") as stream:
+            return self._load_lines(stream)
 
-# Example usage
-if __name__ == "__main__":
-    analyzer = NetworkLogAnalyzer()
-    
-    # Example with a sample log file (you would replace this with your actual log file)
-    # analyzer.run_full_analysis("access.log")
-    
-    print("Network Log Analyzer initialized. Use analyzer.run_full_analysis('your_log_file.log') to start analysis.")
+    def load_log_text(self, text):
+        """Load uploaded log text without creating a temporary file."""
+        return self._load_lines(text.splitlines())
+
+    def _load_lines(self, lines):
+        records = []
+        self.malformed_lines = 0
+        self.anomalies = []
+        for line_number, line in enumerate(lines, 1):
+            line = line.strip()
+            if not line:
+                continue
+            match = LOG_PATTERN.fullmatch(line)
+            if not match:
+                self.malformed_lines += 1
+                continue
+            record = match.groupdict()
+            try:
+                record["datetime"] = datetime.strptime(
+                    record["timestamp"], "%d/%b/%Y:%H:%M:%S %z"
+                ).astimezone(timezone.utc)
+            except ValueError:
+                self.malformed_lines += 1
+                continue
+            record["line_number"] = line_number
+            record["status"] = int(record["status"])
+            record["size"] = 0 if record["size"] == "-" else int(record["size"])
+            record["referer"] = record["referer"] or "-"
+            record["user_agent"] = record["user_agent"] or "-"
+            records.append(record)
+
+        self.df = pd.DataFrame.from_records(records, columns=[
+            "line_number", "ip", "timestamp", "datetime", "method", "url",
+            "protocol", "status", "size", "referer", "user_agent",
+        ])
+        self.preprocess_data()
+        return self.df
+
+    def preprocess_data(self):
+        if self.df is None:
+            raise ValueError("No data loaded. Please load a log file first.")
+        self.df["datetime"] = pd.to_datetime(self.df["datetime"], utc=True)
+        self.df["url_length"] = self.df["url"].str.len()
+        self.df["has_query_params"] = self.df["url"].str.contains("?", regex=False)
+        self.df["is_bot"] = self.df["user_agent"].str.contains(
+            "bot|crawler|spider", case=False, regex=True, na=False
+        )
+        self.df["is_error"] = self.df["status"] >= 400
+        self.df["is_success"] = self.df["status"] < 400
+
+    def detect_anomalies(self):
+        if self.df is None:
+            raise ValueError("No data loaded. Please load a log file first.")
+        self.anomalies = []
+        if self.df.empty:
+            return self.anomalies
+        for ip, count in self.df["ip"].value_counts().items():
+            if count >= self.high_frequency_threshold:
+                self.anomalies.append({
+                    "type": "High Frequency IP", "ip": ip, "count": int(count),
+                    "severity": "High" if count >= 2 * self.high_frequency_threshold else "Medium",
+                })
+        error_rate = float(self.df["is_error"].mean())
+        if error_rate > 0.1:
+            self.anomalies.append({
+                "type": "High Error Rate", "error_rate": error_rate,
+                "severity": "High" if error_rate > 0.2 else "Medium",
+            })
+        urls = self.df["url"].map(lambda url: unquote(unquote(url)))
+        for name, pattern in SUSPICIOUS_PATTERNS.items():
+            count = int(urls.str.contains(pattern).sum())
+            if count:
+                self.anomalies.append({"type": name, "count": count, "severity": "High"})
+        short_agents = int(self.df["user_agent"].str.len().lt(20).sum())
+        if short_agents:
+            self.anomalies.append({
+                "type": "Suspicious User Agent", "count": short_agents, "severity": "Medium",
+            })
+        return self.anomalies
+
+    def generate_traffic_report(self):
+        if self.df is None:
+            raise ValueError("No data loaded. Please load a log file first.")
+        dates = self.df["datetime"]
+        return {
+            "total_requests": len(self.df),
+            "malformed_lines": self.malformed_lines,
+            "unique_ips": self.df["ip"].nunique(),
+            "date_range": {
+                "start": dates.min().strftime("%Y-%m-%d %H:%M:%S UTC") if not dates.empty else "N/A",
+                "end": dates.max().strftime("%Y-%m-%d %H:%M:%S UTC") if not dates.empty else "N/A",
+            },
+            "status_distribution": self.df["status"].value_counts().to_dict(),
+            "error_rate": float(self.df["is_error"].mean()) if not self.df.empty else 0.0,
+            "top_ips": self.df["ip"].value_counts().head(10).to_dict(),
+            "top_urls": self.df["url"].value_counts().head(10).to_dict(),
+            "method_distribution": self.df["method"].value_counts().to_dict(),
+        }
+
+    def create_visualizations(self):
+        if self.df is None:
+            raise ValueError("No data loaded. Please load a log file first.")
+        if self.df.empty:
+            return {}
+        hourly = self.df.set_index("datetime").resample("h").size()
+        status = self.df["status"].value_counts()
+        ips = self.df["ip"].value_counts().head(15)
+        methods = self.df["method"].value_counts()
+        return {
+            "traffic_timeline": px.line(x=hourly.index, y=hourly.values,
+                                        title="Traffic Over Time (Hourly)",
+                                        labels={"x": "Time (UTC)", "y": "Requests"}),
+            "status_distribution": px.pie(values=status.values, names=status.index,
+                                           title="HTTP Status Codes"),
+            "top_ips": px.bar(x=ips.values, y=ips.index, orientation="h",
+                              title="Top IP Addresses", labels={"x": "Requests", "y": "IP"}),
+            "method_distribution": px.bar(x=methods.index, y=methods.values,
+                                          title="HTTP Methods"),
+        }
+
+    def export_report(self, filename="log_analysis_report.html"):
+        report = self.generate_traffic_report()
+        anomalies = self.detect_anomalies()
+        items = "".join(
+            "<li><strong>{}</strong> ({}) — {}</li>".format(
+                escape(str(item["type"])), escape(str(item["severity"])),
+                escape(", ".join(f"{key}: {value}" for key, value in item.items()
+                                 if key not in {"type", "severity"})),
+            ) for item in anomalies
+        ) or "<li>None detected</li>"
+        rows = "".join(
+            f"<tr><td>{escape(str(ip))}</td><td>{count:,}</td></tr>"
+            for ip, count in report["top_ips"].items()
+        )
+        content = f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Network Log Analysis</title>
+<style>body{{font:16px system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem}}
+table{{border-collapse:collapse;width:100%}}td,th{{border:1px solid #ccc;padding:.5rem;text-align:left}}
+</style></head><body><h1>Network Log Analysis</h1>
+<p>Valid requests: {report['total_requests']:,} · Malformed lines: {report['malformed_lines']:,}
+· Unique IPs: {report['unique_ips']:,} · Error rate: {report['error_rate']:.2%}</p>
+<p>Range: {report['date_range']['start']} to {report['date_range']['end']}</p>
+<h2>Anomalies</h2><ul>{items}</ul>
+<h2>Top IP addresses</h2><table><tr><th>IP address</th><th>Requests</th></tr>{rows}</table>
+</body></html>"""
+        Path(filename).write_text(content, encoding="utf-8")
+        return filename
+
+    def run_full_analysis(self, log_file_path=None, report_path="log_analysis_report.html"):
+        self.load_log_file(log_file_path)
+        self.detect_anomalies()
+        report = self.generate_traffic_report()
+        self.export_report(report_path)
+        return report
