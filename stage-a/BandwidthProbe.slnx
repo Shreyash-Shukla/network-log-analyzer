@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="BandwidthProbe.App/BandwidthProbe.App.csproj" />
+  <Project Path="BandwidthProbe.Core/BandwidthProbe.Core.csproj" />
+  <Project Path="BandwidthProbe.Validation/BandwidthProbe.Validation.csproj" />
+</Solution>
