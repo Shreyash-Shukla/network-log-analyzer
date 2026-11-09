@@ -117,7 +117,7 @@ class NetworkLogAnalyzer:
             count = int(urls.str.contains(pattern).sum())
             if count:
                 self.anomalies.append({"type": name, "count": count, "severity": "High"})
-        short_agents = int(self.df["user_agent"].str.len().lt(20).sum())
+        short_agents = int((self.df["user_agent"].ne("-") & self.df["user_agent"].str.len().lt(20)).sum())
         if short_agents:
             self.anomalies.append({
                 "type": "Suspicious User Agent", "count": short_agents, "severity": "Medium",

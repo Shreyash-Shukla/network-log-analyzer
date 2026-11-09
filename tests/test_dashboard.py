@@ -1,8 +1,18 @@
 import base64
+from pathlib import Path
+import sys
 import unittest
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from dashboard_app import update_output
-from test_log_analyzer import log_line
+
+try:
+    from tests.test_log_analyzer import log_line
+except ImportError:
+    from test_log_analyzer import log_line
 
 
 class DashboardTests(unittest.TestCase):

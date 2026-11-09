@@ -60,7 +60,7 @@ if (args.Length == 3 && args[0] == "--traffic-server")
     return;
 }
 
-var results = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "results"));
+var results = GetResultsDirectory();
 using var collector = new EtwBandwidthCollector(results);
 using var self = Process.GetCurrentProcess();
 var cpuBefore = self.TotalProcessorTime;
@@ -95,13 +95,10 @@ try
         portHolder.Start();
         int port = ((IPEndPoint)portHolder.LocalEndpoint).Port;
         portHolder.Stop();
-        var dll = Assembly.GetExecutingAssembly().Location;
-        using var server = Process.Start(new ProcessStartInfo(Environment.ProcessPath!, $"\"{dll}\" --traffic-server {port} {targetBytes}")
-            { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true })
+        using var server = Process.Start(CreateTestProcessStartInfo($"--traffic-server {port} {targetBytes}", redirectStandardOutput: true))
             ?? throw new InvalidOperationException("Traffic server failed.");
         if (await server.StandardOutput.ReadLineAsync() != "READY") throw new InvalidOperationException("Traffic server was not ready.");
-        using var client = Process.Start(new ProcessStartInfo(Environment.ProcessPath!, $"\"{dll}\" --client {port} {targetBytes}")
-            { UseShellExecute = false, CreateNoWindow = true })
+        using var client = Process.Start(CreateTestProcessStartInfo($"--client {port} {targetBytes}"))
             ?? throw new InvalidOperationException("Traffic client failed.");
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(stress ? 720 : 90));
         await Task.WhenAll(server.WaitForExitAsync(timeout.Token), client.WaitForExitAsync(timeout.Token));
@@ -160,11 +157,8 @@ try
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         int port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        var dll = Assembly.GetExecutingAssembly().Location;
-        using var child1 = Process.Start(new ProcessStartInfo(Environment.ProcessPath!, $"\"{dll}\" --client {port} {TransferBytes}")
-            { UseShellExecute = false, CreateNoWindow = true }) ?? throw new InvalidOperationException("Client 1 failed.");
-        using var child2 = Process.Start(new ProcessStartInfo(Environment.ProcessPath!, $"\"{dll}\" --client {port} {TransferBytes}")
-            { UseShellExecute = false, CreateNoWindow = true }) ?? throw new InvalidOperationException("Client 2 failed.");
+        using var child1 = Process.Start(CreateTestProcessStartInfo($"--client {port} {TransferBytes}")) ?? throw new InvalidOperationException("Client 1 failed.");
+        using var child2 = Process.Start(CreateTestProcessStartInfo($"--client {port} {TransferBytes}")) ?? throw new InvalidOperationException("Client 2 failed.");
         using var socket1 = await listener.AcceptTcpClientAsync();
         using var socket2 = await listener.AcceptTcpClientAsync();
         await Task.Delay(1000);
@@ -190,14 +184,8 @@ try
         listener.Start();
         int port = ((IPEndPoint)listener.LocalEndpoint).Port;
         if (udp) listener.Stop();
-        var dll = Assembly.GetExecutingAssembly().Location;
-        using var child = Process.Start(new ProcessStartInfo
-        {
-            FileName = Environment.ProcessPath!,
-            Arguments = $"\"{dll}\" {(udp ? "--udp-client" : "--client")} {port} {TransferBytes} {(ipv6 ? "--ipv6" : "")}",
-            UseShellExecute = false,
-            CreateNoWindow = true
-        }) ?? throw new InvalidOperationException("Could not launch test client.");
+        using var child = Process.Start(CreateTestProcessStartInfo($"{(udp ? "--udp-client" : "--client")} {port} {TransferBytes} {(ipv6 ? "--ipv6" : "")}"))
+            ?? throw new InvalidOperationException("Could not launch test client.");
         if (udp)
         {
             using var sender = new UdpClient(AddressFamily.InterNetwork);
@@ -311,3 +299,32 @@ var report = Path.Combine(results, $"{(extendedIdle ? "extended-idle-30min" : st
 File.WriteAllText(report, JsonSerializer.Serialize(output, new JsonSerializerOptions { WriteIndented = true }));
 Console.WriteLine(report);
 Console.WriteLine(JsonSerializer.Serialize(output, new JsonSerializerOptions { WriteIndented = true }));
+
+static string GetResultsDirectory()
+{
+    for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
+        if (File.Exists(Path.Combine(dir.FullName, "stage-a", "BandwidthProbe.slnx")))
+            return Path.Combine(dir.FullName, "results");
+    return Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "results"));
+}
+
+static ProcessStartInfo CreateTestProcessStartInfo(string arguments, bool redirectStandardOutput = false)
+{
+    var processPath = Environment.ProcessPath!;
+    bool isDotNet = Path.GetFileNameWithoutExtension(processPath)
+        .Equals("dotnet", StringComparison.OrdinalIgnoreCase);
+#pragma warning disable IL3000
+    var assemblyLocation = Assembly.GetExecutingAssembly().Location;
+#pragma warning restore IL3000
+
+    string args = isDotNet && !string.IsNullOrEmpty(assemblyLocation)
+        ? $"\"{assemblyLocation}\" {arguments}"
+        : arguments;
+
+    return new ProcessStartInfo(processPath, args)
+    {
+        UseShellExecute = false,
+        CreateNoWindow = true,
+        RedirectStandardOutput = redirectStandardOutput
+    };
+}

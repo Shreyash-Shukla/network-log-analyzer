@@ -96,12 +96,23 @@ public sealed class EtwBandwidthCollector : IBandwidthCollector
             catch (Exception ex)
             {
                 _gap = true;
-                _status = $"Cannot start recording: {ex.Message}";
                 _session?.Dispose();
                 _session = null;
-                _lines.Writer.TryComplete();
-                // A failed start did not create a usable capture to export.
+                _lines?.Writer.TryComplete();
+                if (_writer is not null)
+                {
+                    try { _writer.Wait(TimeSpan.FromSeconds(1)); } catch { }
+                    _writer = null;
+                }
+                var failedFile = SessionFile;
                 SessionFile = null;
+                _stream?.Dispose();
+                _stream = null;
+                if (failedFile is not null)
+                {
+                    try { File.Delete(failedFile); } catch { }
+                }
+                _status = $"Cannot start recording: {ex.Message}";
                 throw;
             }
         }
@@ -137,7 +148,8 @@ public sealed class EtwBandwidthCollector : IBandwidthCollector
                 if (!_activePids.TryGetValue(pid, out var app) || timestamp - app.LastCheckedUtc >= TimeSpan.FromSeconds(2))
                 {
                     var resolved = ResolveWithCache(pid);
-                    if (app is null || app.StartUtc != resolved.StartUtc || app.Name != resolved.Name)
+                    if (app is null || (app.Name.StartsWith("Unknown process") && !resolved.Name.StartsWith("Unknown process")) ||
+                        (resolved.StartUtc is not null && app.StartUtc != resolved.StartUtc))
                     {
                         app = resolved;
                         _apps[$"{pid}:{app.StartUtc?.Ticks ?? timestamp.Ticks}"] = app;
@@ -190,6 +202,7 @@ public sealed class EtwBandwidthCollector : IBandwidthCollector
                 {
                     if (_activePids.TryGetValue(pid, out var active) && active.Name.StartsWith("Unknown process")) active.Name = name;
                     if (_processStarts.TryGetValue(pid, out var started)) started.Name = name;
+                    else _processStarts[pid] = new MutableUsage(pid, name, null);
                 }
             }
         }
@@ -213,7 +226,12 @@ public sealed class EtwBandwidthCollector : IBandwidthCollector
     {
         if (_processStarts.TryGetValue(pid, out var started))
             return new MutableUsage(pid, started.Name, started.StartUtc);
-        return Resolve(pid);
+        var resolved = Resolve(pid);
+        if (!resolved.Name.StartsWith("Unknown process"))
+        {
+            _processStarts[pid] = resolved;
+        }
+        return resolved;
     }
 
     private static MutableUsage Resolve(int pid)
@@ -254,8 +272,11 @@ public sealed class EtwBandwidthCollector : IBandwidthCollector
             double upRate = _session is null ? 0 : Math.Max(0, up - _lastUpload) / seconds;
             _lastDownload = down; _lastUpload = up; _rateClock.Restart();
             var adapters = new List<AdapterUsage>();
-            foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
+            var nics = NetworkInterface.GetAllNetworkInterfaces();
+            var currentNicIds = new HashSet<string>();
+            foreach (var nic in nics)
             {
+                currentNicIds.Add(nic.Id);
                 try
                 {
                     if (_session is null)
@@ -276,7 +297,7 @@ public sealed class EtwBandwidthCollector : IBandwidthCollector
                 }
                 catch { _gap = true; }
             }
-            if (_session is not null && _adapters.Keys.Except(NetworkInterface.GetAllNetworkInterfaces().Select(x => x.Id)).Any()) _gap = true;
+            if (_session is not null && _adapters.Keys.Except(currentNicIds).Any()) _gap = true;
             if (_session is null && _pausedAdapters is not null) adapters = [.. _pausedAdapters];
             long lost = 0;
             try { lost = _session?.EventsLost ?? _lastEventsLost; } catch { _gap = true; }
@@ -329,12 +350,15 @@ public sealed class EtwBandwidthCollector : IBandwidthCollector
 
     private async Task WriteLinesAsync()
     {
-        if (_stream is null || _lines is null) return;
+        var stream = _stream;
+        var lines = _lines;
+        if (stream is null || lines is null) return;
         try
         {
-            await foreach (var line in _lines.Reader.ReadAllAsync()) await _stream.WriteLineAsync(line);
-            await _stream.FlushAsync();
+            await foreach (var line in lines.Reader.ReadAllAsync()) await stream.WriteLineAsync(line);
+            await stream.FlushAsync();
         }
+        catch (ObjectDisposedException) { }
         catch (Exception ex) { lock (_gate) { _gap = true; _status = $"Export recording failed: {ex.Message}"; } }
     }
 
@@ -342,7 +366,7 @@ public sealed class EtwBandwidthCollector : IBandwidthCollector
     {
         if (SessionFile is null) throw new InvalidOperationException("No session yet.");
         Pause(); // A closed session is a consistent JSONL export.
-        File.Copy(SessionFile, destination, overwrite: false);
+        File.Copy(SessionFile, destination, overwrite: true);
     }
 
     public void Dispose()

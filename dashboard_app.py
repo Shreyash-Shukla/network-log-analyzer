@@ -145,7 +145,7 @@ def update_output(contents, filename):
         
         return upload_status, analysis_content
         
-    except (ValueError, UnicodeError, binascii.Error) as e:
+    except Exception as e:
         error_msg = dbc.Alert(f"Error analyzing file: {str(e)}", color="danger")
         return error_msg, html.Div("Analysis failed. Please check the log file format.", className="text-center text-danger")
 

@@ -1,6 +1,11 @@
+from pathlib import Path
+import sys
 import tempfile
 import unittest
-from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from log_analyzer import NetworkLogAnalyzer
 
@@ -67,6 +72,20 @@ class AnalyzerTests(unittest.TestCase):
     def test_missing_file_raises(self):
         with self.assertRaises(FileNotFoundError):
             NetworkLogAnalyzer().load_log_file("missing-access.log")
+
+    def test_suspicious_user_agent(self):
+        analyzer = NetworkLogAnalyzer()
+        analyzer.load_log_text("\n".join([
+            log_line(combined=False),
+            log_line(combined=True),
+        ]))
+        anomalies = analyzer.detect_anomalies()
+        self.assertNotIn("Suspicious User Agent", {a["type"] for a in anomalies})
+
+        short_agent_line = f'192.0.2.1 - - [{STAMP}] "GET / HTTP/1.1" 200 123 "-" "curl/7.68.0"'
+        analyzer.load_log_text(short_agent_line)
+        anomalies = analyzer.detect_anomalies()
+        self.assertIn("Suspicious User Agent", {a["type"] for a in anomalies})
 
 
 if __name__ == "__main__":
