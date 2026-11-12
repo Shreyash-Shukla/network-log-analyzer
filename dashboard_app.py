@@ -87,6 +87,7 @@ def update_output(contents, filename):
                         dbc.CardBody([
                             html.H5("Summary Statistics", className="card-title"),
                             html.P(f"Total Requests: {report['total_requests']:,}"),
+                            html.P(f"Total Bandwidth: {report.get('total_bytes_formatted', '0 B')}"),
                             html.P(f"Malformed Lines: {report['malformed_lines']:,}"),
                             html.P(f"Unique IPs: {report['unique_ips']:,}"),
                             html.P(f"Error Rate: {report.get('error_rate', 0):.2%}"),

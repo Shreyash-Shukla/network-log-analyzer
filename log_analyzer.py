@@ -25,6 +25,21 @@ SUSPICIOUS_PATTERNS = {
 }
 
 
+def format_bytes(num_bytes):
+    """Format byte counts into human-readable binary units (B, KiB, MiB, GiB, TiB)."""
+    if num_bytes is None or num_bytes < 0:
+        return "0 B"
+    units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"]
+    unit_idx = 0
+    val = float(num_bytes)
+    while val >= 1024.0 and unit_idx < len(units) - 1:
+        val /= 1024.0
+        unit_idx += 1
+    if unit_idx == 0:
+        return f"{int(val)} {units[unit_idx]}"
+    return f"{val:.2f} {units[unit_idx]}"
+
+
 class NetworkLogAnalyzer:
     def __init__(self, log_file_path=None, high_frequency_threshold=100):
         if high_frequency_threshold < 1:
@@ -128,10 +143,24 @@ class NetworkLogAnalyzer:
         if self.df is None:
             raise ValueError("No data loaded. Please load a log file first.")
         dates = self.df["datetime"]
+        total_bytes = int(self.df["size"].sum()) if not self.df.empty else 0
+        avg_bytes = float(self.df["size"].mean()) if not self.df.empty else 0.0
+        top_bandwidth_ips = (
+            self.df.groupby("ip")["size"].sum().nlargest(10).to_dict()
+            if not self.df.empty else {}
+        )
+        top_bandwidth_urls = (
+            self.df.groupby("url")["size"].sum().nlargest(10).to_dict()
+            if not self.df.empty else {}
+        )
         return {
             "total_requests": len(self.df),
             "malformed_lines": self.malformed_lines,
             "unique_ips": self.df["ip"].nunique(),
+            "total_bytes": total_bytes,
+            "total_bytes_formatted": format_bytes(total_bytes),
+            "avg_bytes_per_request": avg_bytes,
+            "avg_bytes_formatted": format_bytes(avg_bytes),
             "date_range": {
                 "start": dates.min().strftime("%Y-%m-%d %H:%M:%S UTC") if not dates.empty else "N/A",
                 "end": dates.max().strftime("%Y-%m-%d %H:%M:%S UTC") if not dates.empty else "N/A",
@@ -140,6 +169,8 @@ class NetworkLogAnalyzer:
             "error_rate": float(self.df["is_error"].mean()) if not self.df.empty else 0.0,
             "top_ips": self.df["ip"].value_counts().head(10).to_dict(),
             "top_urls": self.df["url"].value_counts().head(10).to_dict(),
+            "top_bandwidth_ips": top_bandwidth_ips,
+            "top_bandwidth_urls": top_bandwidth_urls,
             "method_distribution": self.df["method"].value_counts().to_dict(),
         }
 
@@ -149,6 +180,7 @@ class NetworkLogAnalyzer:
         if self.df.empty:
             return {}
         hourly = self.df.set_index("datetime").resample("h").size()
+        hourly_bandwidth = self.df.set_index("datetime")["size"].resample("h").sum()
         status = self.df["status"].value_counts()
         ips = self.df["ip"].value_counts().head(15)
         methods = self.df["method"].value_counts()
@@ -156,6 +188,9 @@ class NetworkLogAnalyzer:
             "traffic_timeline": px.line(x=hourly.index, y=hourly.values,
                                         title="Traffic Over Time (Hourly)",
                                         labels={"x": "Time (UTC)", "y": "Requests"}),
+            "bandwidth_timeline": px.line(x=hourly_bandwidth.index, y=hourly_bandwidth.values,
+                                          title="Bandwidth Over Time (Hourly)",
+                                          labels={"x": "Time (UTC)", "y": "Bytes Transferred"}),
             "status_distribution": px.pie(values=status.values, names=status.index,
                                            title="HTTP Status Codes"),
             "top_ips": px.bar(x=ips.values, y=ips.index, orientation="h",
@@ -178,16 +213,21 @@ class NetworkLogAnalyzer:
             f"<tr><td>{escape(str(ip))}</td><td>{count:,}</td></tr>"
             for ip, count in report["top_ips"].items()
         )
+        bw_rows = "".join(
+            f"<tr><td>{escape(str(ip))}</td><td>{format_bytes(bw)}</td></tr>"
+            for ip, bw in report.get("top_bandwidth_ips", {}).items()
+        )
         content = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Network Log Analysis</title>
 <style>body{{font:16px system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem}}
-table{{border-collapse:collapse;width:100%}}td,th{{border:1px solid #ccc;padding:.5rem;text-align:left}}
+table{{border-collapse:collapse;width:100%;margin-bottom:1.5rem}}td,th{{border:1px solid #ccc;padding:.5rem;text-align:left}}
 </style></head><body><h1>Network Log Analysis</h1>
 <p>Valid requests: {report['total_requests']:,} · Malformed lines: {report['malformed_lines']:,}
-· Unique IPs: {report['unique_ips']:,} · Error rate: {report['error_rate']:.2%}</p>
+· Unique IPs: {report['unique_ips']:,} · Bandwidth: {report['total_bytes_formatted']} (avg: {report['avg_bytes_formatted']}/req) · Error rate: {report['error_rate']:.2%}</p>
 <p>Range: {report['date_range']['start']} to {report['date_range']['end']}</p>
 <h2>Anomalies</h2><ul>{items}</ul>
 <h2>Top IP addresses</h2><table><tr><th>IP address</th><th>Requests</th></tr>{rows}</table>
+<h2>Top Bandwidth Consumers</h2><table><tr><th>IP address</th><th>Total Data</th></tr>{bw_rows}</table>
 </body></html>"""
         Path(filename).write_text(content, encoding="utf-8")
         return filename

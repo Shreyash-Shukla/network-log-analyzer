@@ -7,7 +7,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from log_analyzer import NetworkLogAnalyzer
+from log_analyzer import NetworkLogAnalyzer, format_bytes
 
 
 STAMP = "10/Oct/2000:13:55:36 -0700"
@@ -86,6 +86,40 @@ class AnalyzerTests(unittest.TestCase):
         analyzer.load_log_text(short_agent_line)
         anomalies = analyzer.detect_anomalies()
         self.assertIn("Suspicious User Agent", {a["type"] for a in anomalies})
+
+    def test_format_bytes(self):
+        self.assertEqual(format_bytes(0), "0 B")
+        self.assertEqual(format_bytes(-10), "0 B")
+        self.assertEqual(format_bytes(512), "512 B")
+        self.assertEqual(format_bytes(1024), "1.00 KiB")
+        self.assertEqual(format_bytes(1048576 * 5), "5.00 MiB")
+        self.assertEqual(format_bytes(1073741824 * 2.5), "2.50 GiB")
+
+    def test_bandwidth_metrics_and_report(self):
+        analyzer = NetworkLogAnalyzer()
+        analyzer.load_log_text("\n".join([
+            log_line(ip="10.0.0.1", url="/api/data", size="1000"),
+            log_line(ip="10.0.0.1", url="/index.html", size="2000"),
+            log_line(ip="10.0.0.2", url="/api/data", size="500"),
+        ]))
+        report = analyzer.generate_traffic_report()
+        self.assertEqual(report["total_bytes"], 3500)
+        self.assertEqual(report["total_bytes_formatted"], "3.42 KiB")
+        self.assertAlmostEqual(report["avg_bytes_per_request"], 3500 / 3)
+        self.assertEqual(report["top_bandwidth_ips"]["10.0.0.1"], 3000)
+        self.assertEqual(report["top_bandwidth_ips"]["10.0.0.2"], 500)
+        self.assertEqual(report["top_bandwidth_urls"]["/api/data"], 1500)
+        self.assertEqual(report["top_bandwidth_urls"]["/index.html"], 2000)
+
+        figs = analyzer.create_visualizations()
+        self.assertIn("bandwidth_timeline", figs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "report.html"
+            analyzer.export_report(path)
+            content = path.read_text(encoding="utf-8")
+        self.assertIn("Top Bandwidth Consumers", content)
+        self.assertIn("3.42 KiB", content)
 
 
 if __name__ == "__main__":
