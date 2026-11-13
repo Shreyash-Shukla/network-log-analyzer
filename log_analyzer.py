@@ -298,6 +298,57 @@ table{{border-collapse:collapse;width:100%;margin-bottom:1.5rem}}td,th{{border:1
             self.df.to_csv(filename, index=False, encoding="utf-8")
         return filename
 
+    def filter_logs(self, ip=None, status=None, method=None, url_pattern=None,
+                    start_date=None, end_date=None, is_error=None):
+        """Filter log records and return a new NetworkLogAnalyzer instance with matching records."""
+        if self.df is None:
+            raise ValueError("No data loaded. Please load a log file first.")
+
+        filtered_df = self.df.copy()
+
+        if ip is not None:
+            filtered_df = filtered_df[filtered_df["ip"] == str(ip)]
+
+        if status is not None:
+            if isinstance(status, tuple) and len(status) == 2 and isinstance(status[0], int) and isinstance(status[1], int):
+                filtered_df = filtered_df[(filtered_df["status"] >= status[0]) & (filtered_df["status"] <= status[1])]
+            elif isinstance(status, (list, set)):
+                filtered_df = filtered_df[filtered_df["status"].isin(status)]
+            else:
+                filtered_df = filtered_df[filtered_df["status"] == int(status)]
+
+        if method is not None:
+            if isinstance(method, (list, set, tuple)):
+                methods = [str(m).upper() for m in method]
+                filtered_df = filtered_df[filtered_df["method"].isin(methods)]
+            else:
+                filtered_df = filtered_df[filtered_df["method"] == str(method).upper()]
+
+        if url_pattern is not None:
+            filtered_df = filtered_df[filtered_df["url"].str.contains(url_pattern, regex=True, na=False)]
+
+        if start_date is not None:
+            ts_start = pd.to_datetime(start_date, utc=True)
+            filtered_df = filtered_df[filtered_df["datetime"] >= ts_start]
+
+        if end_date is not None:
+            ts_end = pd.to_datetime(end_date, utc=True)
+            filtered_df = filtered_df[filtered_df["datetime"] <= ts_end]
+
+        if is_error is not None:
+            filtered_df = filtered_df[filtered_df["is_error"] == bool(is_error)]
+
+        new_analyzer = NetworkLogAnalyzer(
+            log_file_path=self.log_file_path,
+            high_frequency_threshold=self.high_frequency_threshold,
+            auth_failure_threshold=self.auth_failure_threshold,
+            exfiltration_threshold=self.exfiltration_threshold,
+        )
+        new_analyzer.df = filtered_df.reset_index(drop=True)
+        new_analyzer.malformed_lines = 0
+        new_analyzer.anomalies = []
+        return new_analyzer
+
     def run_full_analysis(self, log_file_path=None, report_path="log_analysis_report.html"):
         self.load_log_file(log_file_path)
         self.detect_anomalies()

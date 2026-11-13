@@ -19,6 +19,10 @@ def main():
     parser.add_argument('--output', '-o', default='log_analysis_report.html', help='Path for the HTML report (default: log_analysis_report.html)')
     parser.add_argument('--json', nargs='?', const='log_analysis_report.json', default=None, help='Export analysis results to JSON')
     parser.add_argument('--csv', nargs='?', const='parsed_logs.csv', default=None, help='Export parsed logs to CSV')
+    parser.add_argument('--filter-ip', default=None, help='Filter logs by specific IP address')
+    parser.add_argument('--filter-status', type=int, default=None, help='Filter logs by HTTP status code')
+    parser.add_argument('--filter-method', default=None, help='Filter logs by HTTP method (GET, POST, etc.)')
+    parser.add_argument('--filter-url', default=None, help='Filter logs matching a URL regex pattern')
     
     args = parser.parse_args()
     
@@ -49,7 +53,18 @@ def main():
         exfiltration_threshold=args.exfil_threshold,
     )
     try:
-        report = analyzer.run_full_analysis(args.log_file, report_path=args.output)
+        analyzer.load_log_file(args.log_file)
+        if any([args.filter_ip, args.filter_status is not None, args.filter_method, args.filter_url]):
+            analyzer = analyzer.filter_logs(
+                ip=args.filter_ip,
+                status=args.filter_status,
+                method=args.filter_method,
+                url_pattern=args.filter_url,
+            )
+            print(f"Applied filters - matching requests: {len(analyzer.df)}")
+        analyzer.detect_anomalies()
+        report = analyzer.generate_traffic_report()
+        analyzer.export_report(args.output)
         print("\nAnalysis completed successfully!")
         print(f"HTML report written to: {args.output}")
         if args.json:

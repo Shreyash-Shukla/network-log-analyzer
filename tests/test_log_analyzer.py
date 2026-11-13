@@ -203,6 +203,50 @@ class AnalyzerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             NetworkLogAnalyzer(auth_failure_threshold=0)
 
+    def test_filter_logs(self):
+        with self.assertRaises(ValueError):
+            NetworkLogAnalyzer().filter_logs(ip="127.0.0.1")
+
+        analyzer = NetworkLogAnalyzer()
+        analyzer.load_log_text("\n".join([
+            log_line(ip="10.0.0.1", url="/api/v1/users", status=200, size="100"),
+            log_line(ip="10.0.0.1", url="/api/v1/posts", status=201, size="200"),
+            log_line(ip="10.0.0.2", url="/login", status=401, size="50"),
+            log_line(ip="10.0.0.3", url="/admin", status=403, size="60"),
+            log_line(ip="10.0.0.4", url="/server-error", status=500, size="300"),
+        ]))
+
+        # Filter by IP
+        f_ip = analyzer.filter_logs(ip="10.0.0.1")
+        self.assertEqual(len(f_ip.df), 2)
+        self.assertEqual(f_ip.generate_traffic_report()["total_requests"], 2)
+
+        # Filter by status exact
+        f_status = analyzer.filter_logs(status=500)
+        self.assertEqual(len(f_status.df), 1)
+
+        # Filter by status list
+        f_status_list = analyzer.filter_logs(status=[401, 403])
+        self.assertEqual(len(f_status_list.df), 2)
+
+        # Filter by status range tuple (400, 499)
+        f_status_range = analyzer.filter_logs(status=(400, 499))
+        self.assertEqual(len(f_status_range.df), 2)
+
+        # Filter by URL pattern
+        f_url = analyzer.filter_logs(url_pattern=r"^/api/")
+        self.assertEqual(len(f_url.df), 2)
+
+        # Filter by error status
+        f_err = analyzer.filter_logs(is_error=True)
+        self.assertEqual(len(f_err.df), 3)
+
+        # Filter by method
+        f_method = analyzer.filter_logs(method="get")
+        self.assertEqual(len(f_method.df), 5)
+        f_post = analyzer.filter_logs(method="post")
+        self.assertEqual(len(f_post.df), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
