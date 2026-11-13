@@ -14,6 +14,8 @@ def main():
     parser.add_argument('--generate-sample', action='store_true', help='Generate sample log files')
     parser.add_argument('--dashboard', action='store_true', help='Launch interactive dashboard')
     parser.add_argument('--threshold', type=int, default=100, help='High frequency IP request threshold (default: 100)')
+    parser.add_argument('--auth-threshold', type=int, default=None, help='Failed authentication attempt threshold')
+    parser.add_argument('--exfil-threshold', type=int, default=10 * 1024 * 1024, help='Data exfiltration size threshold in bytes (default: 10485760)')
     parser.add_argument('--output', '-o', default='log_analysis_report.html', help='Path for the HTML report (default: log_analysis_report.html)')
     parser.add_argument('--json', nargs='?', const='log_analysis_report.json', default=None, help='Export analysis results to JSON')
     parser.add_argument('--csv', nargs='?', const='parsed_logs.csv', default=None, help='Export parsed logs to CSV')
@@ -41,7 +43,11 @@ def main():
         sys.exit(1)
     
     # Run analysis
-    analyzer = NetworkLogAnalyzer(high_frequency_threshold=args.threshold)
+    analyzer = NetworkLogAnalyzer(
+        high_frequency_threshold=args.threshold,
+        auth_failure_threshold=args.auth_threshold,
+        exfiltration_threshold=args.exfil_threshold,
+    )
     try:
         report = analyzer.run_full_analysis(args.log_file, report_path=args.output)
         print("\nAnalysis completed successfully!")

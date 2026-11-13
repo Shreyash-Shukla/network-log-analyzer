@@ -158,6 +158,51 @@ class AnalyzerTests(unittest.TestCase):
             analyzer.export_csv(anom_csv, only_anomalies=True)
             self.assertTrue(anom_csv.exists())
 
+    def test_advanced_security_anomalies(self):
+        # 1. Test Sensitive file probing
+        analyzer = NetworkLogAnalyzer()
+        analyzer.load_log_text("\n".join([
+            log_line(url="/.env", status=404),
+            log_line(url="/wp-config.php", status=403),
+            log_line(url="/backup.sql", status=200),
+            log_line(url="/.git/config", status=404),
+        ]))
+        anomalies = analyzer.detect_anomalies()
+        types = {a["type"] for a in anomalies}
+        self.assertIn("Sensitive file probing", types)
+
+        # 2. Test Auth Brute Force
+        analyzer_auth = NetworkLogAnalyzer(auth_failure_threshold=3)
+        analyzer_auth.load_log_text("\n".join([
+            log_line(ip="192.168.1.100", url="/login", status=401),
+            log_line(ip="192.168.1.100", url="/login", status=401),
+            log_line(ip="192.168.1.100", url="/admin", status=403),
+            log_line(ip="192.168.1.200", url="/index.html", status=200),
+        ]))
+        anomalies_auth = analyzer_auth.detect_anomalies()
+        auth_types = [a for a in anomalies_auth if a["type"] == "Potential Auth Brute Force"]
+        self.assertEqual(len(auth_types), 1)
+        self.assertEqual(auth_types[0]["ip"], "192.168.1.100")
+        self.assertEqual(auth_types[0]["count"], 3)
+
+        # 3. Test Data Exfiltration
+        analyzer_exfil = NetworkLogAnalyzer(exfiltration_threshold=1000000)
+        analyzer_exfil.load_log_text("\n".join([
+            log_line(ip="10.0.0.99", url="/export/database.dump", size="1500000"),
+            log_line(ip="10.0.0.99", url="/normal", size="500"),
+        ]))
+        anomalies_exfil = analyzer_exfil.detect_anomalies()
+        exfil_types = [a for a in anomalies_exfil if a["type"] == "Potential Data Exfiltration"]
+        self.assertEqual(len(exfil_types), 1)
+        self.assertEqual(exfil_types[0]["bytes"], 1500000)
+        self.assertEqual(exfil_types[0]["ip"], "10.0.0.99")
+
+        # 4. Test invalid threshold raises
+        with self.assertRaises(ValueError):
+            NetworkLogAnalyzer(high_frequency_threshold=0)
+        with self.assertRaises(ValueError):
+            NetworkLogAnalyzer(auth_failure_threshold=0)
+
 
 if __name__ == "__main__":
     unittest.main()

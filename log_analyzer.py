@@ -23,6 +23,11 @@ SUSPICIOUS_PATTERNS = {
     "Cross-site scripting": re.compile(r'<script\b', re.I),
     "SQL injection": re.compile(r'\bunion\s+select\b|\bor\s+[^&]*=', re.I),
     "Command execution": re.compile(r'\bcmd\.exe\b|[?&]cmd=', re.I),
+    "Sensitive file probing": re.compile(
+        r'(?:^|/)(?:\.env|\.git|\.aws|\.ssh|wp-config\.php|web\.config|phpinfo\.php|phpmyadmin)(?:/|\?|$)|'
+        r'\.(?:sql|bak|backup|old|swp|tar\.gz)$',
+        re.I
+    ),
 }
 
 
@@ -42,11 +47,19 @@ def format_bytes(num_bytes):
 
 
 class NetworkLogAnalyzer:
-    def __init__(self, log_file_path=None, high_frequency_threshold=100):
+    def __init__(self, log_file_path=None, high_frequency_threshold=100,
+                 auth_failure_threshold=None, exfiltration_threshold=10 * 1024 * 1024):
         if high_frequency_threshold < 1:
             raise ValueError("high_frequency_threshold must be positive")
         self.log_file_path = log_file_path
         self.high_frequency_threshold = high_frequency_threshold
+        self.auth_failure_threshold = (
+            auth_failure_threshold if auth_failure_threshold is not None
+            else max(2, min(10, high_frequency_threshold))
+        )
+        if self.auth_failure_threshold < 1:
+            raise ValueError("auth_failure_threshold must be positive")
+        self.exfiltration_threshold = exfiltration_threshold
         self.df = None
         self.malformed_lines = 0
         self.anomalies = []
@@ -138,6 +151,22 @@ class NetworkLogAnalyzer:
             self.anomalies.append({
                 "type": "Suspicious User Agent", "count": short_agents, "severity": "Medium",
             })
+        auth_failures = self.df[self.df["status"].isin([401, 403])]
+        if not auth_failures.empty:
+            for ip, count in auth_failures["ip"].value_counts().items():
+                if count >= self.auth_failure_threshold:
+                    self.anomalies.append({
+                        "type": "Potential Auth Brute Force", "ip": ip, "count": int(count),
+                        "severity": "High" if count >= 2 * self.auth_failure_threshold else "Medium",
+                    })
+        large_transfers = self.df[self.df["size"] >= self.exfiltration_threshold]
+        if not large_transfers.empty:
+            for _, row in large_transfers.head(10).iterrows():
+                self.anomalies.append({
+                    "type": "Potential Data Exfiltration", "ip": row["ip"], "url": row["url"],
+                    "bytes": int(row["size"]), "formatted": format_bytes(row["size"]),
+                    "severity": "High",
+                })
         return self.anomalies
 
     def generate_traffic_report(self):
