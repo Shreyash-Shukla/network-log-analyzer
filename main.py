@@ -13,6 +13,10 @@ def main():
     parser.add_argument('log_file', nargs='?', help='Path to the log file to analyze')
     parser.add_argument('--generate-sample', action='store_true', help='Generate sample log files')
     parser.add_argument('--dashboard', action='store_true', help='Launch interactive dashboard')
+    parser.add_argument('--threshold', type=int, default=100, help='High frequency IP request threshold (default: 100)')
+    parser.add_argument('--output', '-o', default='log_analysis_report.html', help='Path for the HTML report (default: log_analysis_report.html)')
+    parser.add_argument('--json', nargs='?', const='log_analysis_report.json', default=None, help='Export analysis results to JSON')
+    parser.add_argument('--csv', nargs='?', const='parsed_logs.csv', default=None, help='Export parsed logs to CSV')
     
     args = parser.parse_args()
     
@@ -31,18 +35,25 @@ def main():
         return
     
     if not args.log_file:
-        print("Usage: python main.py <log_file_path>")
+        print("Usage: python main.py <log_file_path> [options]")
         print("Or use --generate-sample to create sample data")
         print("Or use --dashboard to launch interactive dashboard")
         sys.exit(1)
     
     # Run analysis
-    analyzer = NetworkLogAnalyzer()
+    analyzer = NetworkLogAnalyzer(high_frequency_threshold=args.threshold)
     try:
-        report = analyzer.run_full_analysis(args.log_file)
+        report = analyzer.run_full_analysis(args.log_file, report_path=args.output)
         print("\nAnalysis completed successfully!")
-        print("Check 'log_analysis_report.html' for detailed results.")
+        print(f"HTML report written to: {args.output}")
+        if args.json:
+            analyzer.export_json(args.json)
+            print(f"JSON report written to: {args.json}")
+        if args.csv:
+            analyzer.export_csv(args.csv)
+            print(f"Parsed logs exported to CSV: {args.csv}")
         print(f"Valid requests: {report['total_requests']}; malformed lines: {report['malformed_lines']}")
+        print(f"Total bandwidth: {report.get('total_bytes_formatted', '0 B')}")
         print(f"Total anomalies detected: {len(analyzer.anomalies)}")
     except Exception as e:
         print(f"Error: {e}")

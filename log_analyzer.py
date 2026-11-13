@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 from html import escape
+import json
 from pathlib import Path
 import re
 from urllib.parse import unquote
@@ -230,6 +231,42 @@ table{{border-collapse:collapse;width:100%;margin-bottom:1.5rem}}td,th{{border:1
 <h2>Top Bandwidth Consumers</h2><table><tr><th>IP address</th><th>Total Data</th></tr>{bw_rows}</table>
 </body></html>"""
         Path(filename).write_text(content, encoding="utf-8")
+        return filename
+
+    def export_json(self, filename="log_analysis_report.json", indent=2):
+        if self.df is None:
+            raise ValueError("No data loaded. Please load a log file first.")
+        report = self.generate_traffic_report()
+        anomalies = self.detect_anomalies()
+        payload = {
+            "metadata": {
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "log_file": str(self.log_file_path) if self.log_file_path else None,
+                "high_frequency_threshold": self.high_frequency_threshold,
+            },
+            "summary": report,
+            "anomalies": anomalies,
+        }
+
+        def _default_serializer(obj):
+            if isinstance(obj, (pd.Timestamp, datetime)):
+                return obj.isoformat()
+            if hasattr(obj, "item"):
+                return obj.item()
+            raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+
+        Path(filename).write_text(json.dumps(payload, indent=indent, default=_default_serializer), encoding="utf-8")
+        return filename
+
+    def export_csv(self, filename="parsed_logs.csv", only_anomalies=False):
+        if self.df is None:
+            raise ValueError("No data loaded. Please load a log file first.")
+        if only_anomalies:
+            anomalies = self.detect_anomalies()
+            records = pd.DataFrame(anomalies)
+            records.to_csv(filename, index=False, encoding="utf-8")
+        else:
+            self.df.to_csv(filename, index=False, encoding="utf-8")
         return filename
 
     def run_full_analysis(self, log_file_path=None, report_path="log_analysis_report.html"):

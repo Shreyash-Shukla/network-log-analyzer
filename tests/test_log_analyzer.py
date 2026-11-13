@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -120,6 +121,42 @@ class AnalyzerTests(unittest.TestCase):
             content = path.read_text(encoding="utf-8")
         self.assertIn("Top Bandwidth Consumers", content)
         self.assertIn("3.42 KiB", content)
+
+    def test_export_json_and_csv(self):
+        analyzer = NetworkLogAnalyzer(high_frequency_threshold=2)
+        # Test calling before load raises ValueError
+        with tempfile.TemporaryDirectory() as directory:
+            json_path = Path(directory) / "report.json"
+            csv_path = Path(directory) / "logs.csv"
+            with self.assertRaises(ValueError):
+                NetworkLogAnalyzer().export_json(json_path)
+            with self.assertRaises(ValueError):
+                NetworkLogAnalyzer().export_csv(csv_path)
+
+            analyzer.load_log_text("\n".join([
+                log_line(ip="10.0.0.1", url="/login", status=401, size="500"),
+                log_line(ip="10.0.0.1", url="/api/data", status=200, size="1500"),
+                log_line(ip="10.0.0.2", url="/index.html", status=200, size="2500"),
+            ]))
+
+            analyzer.export_json(json_path)
+            data = json.loads(json_path.read_text(encoding="utf-8"))
+            self.assertIn("metadata", data)
+            self.assertIn("summary", data)
+            self.assertIn("anomalies", data)
+            self.assertEqual(data["metadata"]["high_frequency_threshold"], 2)
+            self.assertEqual(data["summary"]["total_requests"], 3)
+            self.assertEqual(data["summary"]["total_bytes"], 4500)
+
+            analyzer.export_csv(csv_path)
+            csv_text = csv_path.read_text(encoding="utf-8")
+            self.assertIn("line_number,ip,timestamp,datetime", csv_text)
+            self.assertIn("10.0.0.1", csv_text)
+            self.assertIn("10.0.0.2", csv_text)
+
+            anom_csv = Path(directory) / "anom.csv"
+            analyzer.export_csv(anom_csv, only_anomalies=True)
+            self.assertTrue(anom_csv.exists())
 
 
 if __name__ == "__main__":
